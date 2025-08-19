@@ -59,7 +59,7 @@ func (s *Service) FetchNewsletters(ctx context.Context, query string, maxResults
 		subj := hdr["Subject"]
 		from := hdr["From"]
 		date := hdr["Date"]
-		
+
 		if subj == "" {
 			subj = "(no subject)"
 		}
@@ -71,7 +71,7 @@ func (s *Service) FetchNewsletters(ctx context.Context, query string, maxResults
 
 		text, links := utils.PartsToTextAndLinks(full.Payload)
 		text = utils.CleanText(text)
-		
+
 		if len(text) < 400 {
 			continue
 		}
@@ -91,13 +91,12 @@ func (s *Service) FetchNewsletters(ctx context.Context, query string, maxResults
 
 func (s *Service) SendHTML(ctx context.Context, to, subject, htmlBody string) error {
 	var b strings.Builder
-	b.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
-	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("To: " + to + "\r\n")
-	b.WriteString("Subject: " + subject + "\r\n\r\n")
-	b.WriteString("--BOUNDARY\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n")
-	b.WriteString(htmlBody + "\r\n")
-	b.WriteString("--BOUNDARY--")
+	b.WriteString("Subject: " + subject + "\r\n")
+	b.WriteString("MIME-Version: 1.0\r\n")
+	b.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
+	b.WriteString("\r\n")
+	b.WriteString(htmlBody)
 
 	raw := base64.URLEncoding.EncodeToString([]byte(b.String()))
 	_, err := s.svc.Users.Messages.Send("me", &gmail.Message{Raw: raw}).Do()
@@ -109,7 +108,7 @@ func (s *Service) MarkAsRead(ctx context.Context, newsletters []*models.Newslett
 	for _, newsletter := range newsletters {
 		ids = append(ids, newsletter.ID)
 	}
-	
+
 	return s.svc.Users.Messages.BatchModify("me", &gmail.BatchModifyMessagesRequest{
 		Ids:            ids,
 		RemoveLabelIds: []string{"UNREAD"},

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"regexp"
 	"strings"
 	"time"
 
@@ -38,8 +37,8 @@ func (p *Processor) ProcessNewsletters(ctx context.Context, newsletters []*model
 		if err != nil {
 			continue
 		}
-		
-		perSummaries = append(perSummaries, fmt.Sprintf("### %s\n%s\nLinks:\n%s", 
+
+		perSummaries = append(perSummaries, fmt.Sprintf("### %s\n%s\nLinks:\n%s",
 			newsletter.Subject, summary, strings.Join(newsletter.Links, "\n")))
 		processedItems = append(processedItems, newsletter)
 
@@ -60,10 +59,17 @@ func (p *Processor) ProcessNewsletters(ctx context.Context, newsletters []*model
 	if v := validator.ValidateOutput(finalHTML); v != "" {
 		log.Printf("validator: %s", v)
 	}
-	
-	finalHTML += p.createVerificationFooter(processedItems)
-	if p.config.AppendSample {
-		finalHTML = p.appendPerEmailSample(finalHTML, perSummaries)
+
+	// Insert footer before closing body tag (we know the structure now)
+	if p.config.ShowFooter {
+		footerHTML := "\n  <div class=\"footer\">\n" + p.createVerificationFooter(processedItems)
+		if p.config.AppendSample {
+			footerHTML += p.appendPerEmailSample("", perSummaries)
+		}
+		footerHTML += "\n  </div>\n"
+
+		// Insert before </body>
+		finalHTML = strings.Replace(finalHTML, "</body>", footerHTML+"</body>", 1)
 	}
 
 	return finalHTML, processedItems, nil
@@ -95,7 +101,7 @@ func (p *Processor) summarizeSingle(ctx context.Context, newsletter *models.News
 	)
 
 	messages := []openai.ChatMessage{
-		{Role: "system", Content: p.systemPass1()},
+		{Role: "system", Content: p.config.PromptSingle},
 		{Role: "user", Content: user},
 	}
 
@@ -118,94 +124,148 @@ func (p *Processor) synthesizeFinal(ctx context.Context, perSumm []string, meta 
 	linkIndex := strings.Join(li, "\n\n")
 	joined := strings.Join(perSumm, Separator)
 
-	system := p.systemFinal()
+	system := p.config.PromptFinal
 	user := "Combine and rank the following per-email bullet summaries into a weekly digest, grouped strictly in this order:\n" +
 		"1) Product Management  2) Healthcare  3) Architecture  4) Team Organization  (then an AI section ONLY if relevant).\n" +
 		"Rules:\n" +
-		"- Use WELL-FORMED HTML ONLY (no Markdown). Use <h1>, <h2>, <ul>, <li>, <p>, <a>.\n" +
-		"- Fill each section with concrete bullets; if a section has no content, OMIT the section entirely.\n" +
-		"- Merge duplicates, preserve key facts/metrics, include short source names.\n" +
-		"- Replace [L1], [L2] cues with <a href=\"URL\">short source</a> using the link index.\n\n" +
+		"- Output only plain text with section headers like '=== Product Management ==='\n" +
+		"- Follow each section header with bullet points starting with '- '\n" +
+		"- If a section has no content, OMIT the section entirely\n" +
+		"- Merge duplicates, preserve key facts/metrics, include short source names\n" +
+		"- Keep [L1], [L2] references as-is in the text for link replacement\n" +
+		"- No HTML, Markdown, or special formatting - just plain text\n\n" +
 		"=== PER-EMAIL SUMMARIES ===\n" + joined +
 		"\n\n=== LINK INDEX (map [L*] to URLs) ===\n" + linkIndex + "\n\n" +
-		"Do not include Markdown code fences (```html). Output raw HTML only.\n\n" +
-		"Now produce the final HTML."
+		"Output only plain text sections with the format shown above."
 
 	messages := []openai.ChatMessage{
 		{Role: "system", Content: system},
 		{Role: "user", Content: user},
 	}
 
-	out, err := p.openaiClient.Chat(ctx, p.config.FinalModel, messages, 0.2, 1700)
+	out, err := p.openaiClient.Chat(ctx, p.config.FinalModel, messages, 0.2, 2000)
 	if err != nil {
 		return "", err
 	}
 
-	out = strings.Replace(out, "```html", "<html", 1)
-	out = p.stripCodeFences(out)
-	out = p.normalizeHTMLSummary(out)
+	fmt.Printf("Raw ChatGPT plain text length: %d chars\n", len(out))
+	fmt.Printf("Raw ChatGPT plain text (first 500 chars): %s...\n", out[:min(500, len(out))])
 
-	// Fallback if model didn't emit HTML at all
-	if !strings.Contains(strings.ToLower(out), "<html") {
-		date := time.Now().Format("2006-01-02")
-		out = p.htmlScaffold(date) + "<p><pre>" + utils.HtmlEscape(out) + "</pre></p>"
-		return out, nil
+	// Parse the plain text and convert to HTML
+	htmlContent := p.parseTextToHTML(strings.TrimSpace(out), meta)
+
+	// Build the complete HTML document ourselves
+	finalHTML := p.buildCompleteHTML(htmlContent)
+
+	fmt.Printf("Final HTML length: %d chars\n", len(finalHTML))
+
+	return finalHTML, nil
+}
+
+func (p *Processor) parseTextToHTML(text string, meta []*models.Newsletter) string {
+	var html strings.Builder
+
+	// Build link map for [L1], [L2] replacement
+	linkMap := make(map[string]string)
+	linkCounter := 1
+	for _, m := range meta {
+		for _, link := range m.Links {
+			linkKey := fmt.Sprintf("[L%d]", linkCounter)
+			linkMap[linkKey] = link
+			linkCounter++
+		}
 	}
 
-	// Guard: if output looks like a template (mostly "…"), try a simpler re-ask once
-	if p.looksLikeEmptyTemplate(out) {
-		simple := []openai.ChatMessage{
-			{Role: "system", Content: system},
-			{Role: "user", Content: "Skip any template. Output full HTML with real bullets only; omit empty sections.\n\n" + user},
+	lines := strings.Split(text, "\n")
+	inSection := false
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
 		}
-		out2, err2 := p.openaiClient.Chat(ctx, p.config.FinalModel, simple, 0.2, 1700)
-		if err2 == nil && strings.Contains(strings.ToLower(out2), "<html") && !p.looksLikeEmptyTemplate(out2) {
-			return out2, nil
+
+		// Check for section headers like "=== Product Management ==="
+		if strings.HasPrefix(line, "===") && strings.HasSuffix(line, "===") {
+			// Close previous section if open
+			if inSection {
+				html.WriteString("  </ul>\n")
+			}
+
+			// Extract section name
+			sectionName := strings.TrimSpace(strings.Trim(line, "="))
+			html.WriteString(fmt.Sprintf("  <h2>%s</h2>\n", utils.HtmlEscape(sectionName)))
+			html.WriteString("  <ul>\n")
+			inSection = true
+		} else if strings.HasPrefix(line, "- ") {
+			// Bullet point
+			bulletText := strings.TrimSpace(line[2:]) // Remove "- "
+
+			// Replace [L1], [L2] references with actual links
+			for linkKey, linkURL := range linkMap {
+				if strings.Contains(bulletText, linkKey) {
+					linkHTML := fmt.Sprintf(`<a href="%s">source</a>`, utils.HtmlEscape(linkURL))
+					bulletText = strings.Replace(bulletText, linkKey, linkHTML, -1)
+				}
+			}
+
+			html.WriteString(fmt.Sprintf("    <li>%s</li>\n", bulletText))
 		}
 	}
-	
-	return out, nil
+
+	// Close final section if open
+	if inSection {
+		html.WriteString("  </ul>\n")
+	}
+
+	return html.String()
 }
 
-func (p *Processor) systemPass1() string {
-	return "You summarize single newsletters for a product executive. " +
-		"Return 3–6 short bullets as plain text lines (no HTML/Markdown). " +
-		"Priorities: 1) Product Management 2) Healthcare 3) Architecture 4) Team Organization. " +
-		"Compress or omit pure AI hype unless it clearly impacts those four. No fluff."
-}
+func (p *Processor) buildCompleteHTML(content string) string {
+	date := time.Now().Format("2006-01-02")
 
-func (p *Processor) systemFinal() string {
-	return "You assemble a concise weekly digest for a product executive. " +
-		"Priorities: 1) Product Management 2) Healthcare 3) Architecture 4) Team Organization. " +
-		"AI is lowest priority; include only if clearly relevant. Keep key figures and decisions. " +
-		"OUTPUT STRICT, WELL-FORMED HTML ONLY (no Markdown). Use <h1>, <h2>, <ul>, <li>, <p>, <a>. " +
-		"When you see [L1], [L2], etc., replace them with proper HTML anchors using the corresponding URLs supplied for that item. " +
-		"Do not include Markdown code fences (```html). Output raw HTML only."
-}
+	var html strings.Builder
 
-func (p *Processor) htmlScaffold(date string) string {
-	return fmt.Sprintf(`<!doctype html><html><head><meta charset="utf-8">
-<style>
-body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.5;color:#111}
-h1{font-size:20px;margin:0 0 12px}
-h2{font-size:16px;margin:18px 0 8px;border-bottom:1px solid #eee;padding-bottom:4px}
-ul{margin:0 0 14px 18px;padding:0}
-li{margin:6px 0}
-.meta{color:#666;font-size:12px;margin-bottom:14px}
-table{width:100%%;border-collapse:collapse}
-th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #eee;font-size:12px}
-.small{font-size:12px;color:#444}
-pre{white-space:pre-wrap;word-wrap:break-word}
-</style></head><body>
-<h1>Weekly Digest (%s)</h1>
-<div class="meta">Prioritized: Product Management → Healthcare → Architecture → Team Organization (AI only if relevant)</div>
+	// HTML document structure
+	html.WriteString("<!DOCTYPE html>\n")
+	html.WriteString("<html>\n")
+	html.WriteString("<head>\n")
+	html.WriteString("  <meta charset=\"utf-8\">\n")
+	html.WriteString("  <title>Weekly Digest - " + date + "</title>\n")
+	html.WriteString("  <style>\n")
+	html.WriteString("    body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.5;color:#111;max-width:800px;margin:0 auto;padding:20px}\n")
+	html.WriteString("    h1{font-size:24px;margin:0 0 16px;color:#333}\n")
+	html.WriteString("    h2{font-size:18px;margin:24px 0 12px;border-bottom:2px solid #eee;padding-bottom:6px;color:#444}\n")
+	html.WriteString("    h3{font-size:14px;margin:16px 0 8px;color:#666}\n")
+	html.WriteString("    ul{margin:0 0 16px 20px;padding:0}\n")
+	html.WriteString("    li{margin:8px 0;line-height:1.4}\n")
+	html.WriteString("    .meta{color:#888;font-size:14px;margin-bottom:20px;font-style:italic}\n")
+	html.WriteString("    table{width:100%;border-collapse:collapse;margin:20px 0;font-size:14px}\n")
+	html.WriteString("    th,td{text-align:left;padding:8px 12px;border:1px solid #ddd}\n")
+	html.WriteString("    th{background:#f8f9fa;font-weight:600}\n")
+	html.WriteString("    .small{font-size:12px;color:#666}\n")
+	html.WriteString("    .footer{margin-top:40px;padding-top:20px;border-top:2px solid #eee}\n")
+	html.WriteString("    a{color:#0066cc;text-decoration:none}\n")
+	html.WriteString("    a:hover{text-decoration:underline}\n")
+	html.WriteString("    pre{white-space:pre-wrap;word-wrap:break-word;background:#f8f9fa;padding:12px;border-radius:4px}\n")
+	html.WriteString("  </style>\n")
+	html.WriteString("</head>\n")
+	html.WriteString("<body>\n")
 
-<h2>Product Management</h2><ul><li>…</li></ul>
-<h2>Healthcare</h2><ul><li>…</li></ul>
-<h2>Architecture</h2><ul><li>…</li></ul>
-<h2>Team Organization</h2><ul><li>…</li></ul>
-<h2>AI (only if relevant)</h2><ul><li>…</li></ul>
-</body></html>`, date)
+	// Header
+	html.WriteString("  <h1>Weekly Digest (" + date + ")</h1>\n")
+	html.WriteString("  <div class=\"meta\">Prioritized: Product Management → Healthcare → Architecture → Team Organization (AI only if relevant)</div>\n")
+
+	// Content from OpenAI
+	html.WriteString("  <div class=\"content\">\n")
+	html.WriteString(content)
+	html.WriteString("\n  </div>\n")
+
+	// We'll add footer later in the main process
+	html.WriteString("</body>\n")
+	html.WriteString("</html>")
+
+	return html.String()
 }
 
 func (p *Processor) createFallbackHTML(perSummaries []string) string {
@@ -220,25 +280,43 @@ func (p *Processor) createFallbackHTML(perSummaries []string) string {
 }
 
 func (p *Processor) createVerificationFooter(items []*models.Newsletter) string {
-	var rows []string
+	var sb strings.Builder
+
+	sb.WriteString("<!-- FOOTER START -->\n")
+	sb.WriteString("<div style=\"clear:both;margin-top:40px;padding-top:20px;border-top:2px solid #eee;font-size:14px;\">\n")
+	sb.WriteString("  <h3 style=\"margin:0 0 15px 0;color:#666;font-size:16px;\">Verification</h3>\n")
+	sb.WriteString(fmt.Sprintf("  <p style=\"margin:0 0 20px 0;color:#888;font-size:14px;\">Processed %d newsletter(s). Order below is input order, not priority.</p>\n", len(items)))
+
 	for i, it := range items {
-		sample := ""
+		sb.WriteString("  <div style=\"margin-bottom:15px;padding:10px;background:#f9f9f9;border-radius:4px;\">\n")
+		sb.WriteString(fmt.Sprintf("    <div style=\"font-weight:bold;margin-bottom:5px;\">#%d: %s</div>\n", i+1, utils.HtmlEscape(it.Subject)))
+		sb.WriteString(fmt.Sprintf("    <div style=\"color:#666;margin-bottom:5px;\">From: %s</div>\n", utils.HtmlEscape(it.From)))
+
 		if len(it.Links) > 0 {
-			sample = fmt.Sprintf(`<a href="%s">link</a>`, it.Links[0])
+			sb.WriteString("    <div>Sample link: ")
+			sb.WriteString(fmt.Sprintf("<a href=\"%s\" style=\"color:#0066cc;text-decoration:underline;\">%s</a>", utils.HtmlEscape(it.Links[0]), utils.HtmlEscape(it.Links[0])))
+			sb.WriteString("</div>\n")
+		} else {
+			sb.WriteString("    <div>No links available</div>\n")
 		}
-		rows = append(rows, fmt.Sprintf(
-			"<tr><td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>",
-			i+1, utils.HtmlEscape(it.Subject), utils.HtmlEscape(it.From), utils.HtmlEscape(it.Date), sample,
-		))
+
+		sb.WriteString("  </div>\n")
 	}
-	return `<hr/><h2 class="small">Verification</h2><p class="small">Processed ` + fmt.Sprintf("%d", len(items)) +
-		` newsletter(s). Order below is input order, not priority.</p>
-<table><thead><tr><th>#</th><th>Subject</th><th>From</th><th>Date</th><th>Sample link</th></tr></thead><tbody>` +
-		strings.Join(rows, "") + `</tbody></table>`
+
+	sb.WriteString("</div>\n")
+	sb.WriteString("<!-- FOOTER END -->\n")
+
+	return sb.String()
 }
 
 func (p *Processor) appendPerEmailSample(html string, per []string) string {
 	var sb strings.Builder
+
+	// Only add to existing HTML if provided
+	if html != "" {
+		sb.WriteString(html)
+	}
+
 	sb.WriteString(`<hr/><h2 class="small">Per-email bullets (sample)</h2>`)
 	max := 10
 	if len(per) < max {
@@ -252,41 +330,12 @@ func (p *Processor) appendPerEmailSample(html string, per []string) string {
 		}
 		sb.WriteString(fmt.Sprintf("<h3 class='small'>%s</h3><pre class='small'>%s</pre>", utils.HtmlEscape(title), utils.HtmlEscape(per[i])))
 	}
-	return html + sb.String()
+	return sb.String()
 }
 
-var ellipsisLi = regexp.MustCompile(`(?i)<li>\s*…\s*</li>`)
-var anyLi = regexp.MustCompile(`(?i)<li>.*?</li>`)
-
-func (p *Processor) looksLikeEmptyTemplate(html string) bool {
-	total := len(anyLi.FindAllString(html, -1))
-	empty := len(ellipsisLi.FindAllString(html, -1))
-	// Consider it empty if most bullets are ellipses or there are zero real bullets
-	return total == 0 || (empty >= total-1 && total > 0)
-}
-
-func (p *Processor) normalizeHTMLSummary(html string) string {
-	html = strings.TrimSpace(html)
-
-	// Strip any accidental text after </html>
-	if idx := strings.LastIndex(strings.ToLower(html), "</html>"); idx > 0 {
-		html = html[:idx+7]
+func min(a, b int) int {
+	if a < b {
+		return a
 	}
-
-	// Ensure root tags
-	if !strings.Contains(strings.ToLower(html), "<html") {
-		html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body>" +
-			html + "</body></html>"
-	}
-	return html
-}
-
-var codeFence = regexp.MustCompile("(?s)```[a-zA-Z]*\\n(.*)```")
-
-func (p *Processor) stripCodeFences(s string) string {
-	m := codeFence.FindStringSubmatch(s)
-	if len(m) == 2 {
-		return strings.TrimSpace(m[1])
-	}
-	return strings.TrimSpace(s)
+	return b
 }

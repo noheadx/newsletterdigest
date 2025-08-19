@@ -29,7 +29,7 @@ func main() {
 	}
 
 	ctx := context.Background()
-	
+
 	// Initialize Gmail service
 	gmailSvc, err := gmail.NewService(ctx)
 	if err != nil {
@@ -73,8 +73,8 @@ func main() {
 		}
 	}
 
-	log.Printf("[digest] %s processed=%d sent_to=%s dry_run=%v",
-		time.Now().Format(time.RFC3339), len(processedItems), cfg.ToEmail, cfg.DryRun)
+	log.Printf("[digest] %s processed=%d sent_to=%s dry_run=%v append=%v",
+		time.Now().Format(time.RFC3339), len(processedItems), cfg.ToEmail, cfg.DryRun, cfg.AppendSample)
 }
 
 func setupCredentials() error {
