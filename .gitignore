@@ -1,6 +1,5 @@
 .env
 go.sum
-go.mod
 newsletterdigest_go
 credentials/client_secret.json
 .DS_Store
