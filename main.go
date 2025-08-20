@@ -45,9 +45,13 @@ func main() {
 		log.Fatalf("fetch newsletters: %v", err)
 	}
 
-	if len(newsletters) == 0 {
-		log.Println("[digest] No unread newsletters found. Exiting.")
+	if len(newsletters) == 0 && !cfg.LinkedInOnlyMode {
+		log.Println("[digest] No unread newsletters found and LinkedIn-only mode disabled. Exiting.")
 		return
+	}
+
+	if len(newsletters) == 0 && cfg.LinkedInOnlyMode {
+		log.Println("[digest] No unread newsletters found, but LinkedIn-only mode enabled. Proceeding with LinkedIn content only.")
 	}
 
 	// Initialize OpenAI client
@@ -60,8 +64,13 @@ func main() {
 		log.Fatalf("process newsletters: %v", err)
 	}
 
-	// Send digest email
-	subject := "Weekly Digest - " + time.Now().Format("2006-01-02")
+	// Send digest email with appropriate subject
+	var subject string
+	if len(newsletters) > 0 && len(processedItems) > 0 {
+		subject = "Weekly Digest - " + time.Now().Format("2006-01-02")
+	} else {
+		subject = "LinkedIn Industry Digest - " + time.Now().Format("2006-01-02")
+	}
 	if err := gmailSvc.SendHTML(ctx, cfg.ToEmail, subject, digest); err != nil {
 		log.Fatalf("send email: %v", err)
 	}
@@ -73,8 +82,8 @@ func main() {
 		}
 	}
 
-	log.Printf("[digest] %s processed=%d sent_to=%s dry_run=%v append=%v",
-		time.Now().Format(time.RFC3339), len(processedItems), cfg.ToEmail, cfg.DryRun, cfg.AppendSample)
+	log.Printf("[digest] %s processed=%d sent_to=%s dry_run=%v",
+		time.Now().Format(time.RFC3339), len(processedItems), cfg.ToEmail, cfg.DryRun)
 }
 
 func setupCredentials() error {
