@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"newsletterdigest_go/config"
+	"newsletterdigest_go/fetcher"
 	"newsletterdigest_go/models"
 	"newsletterdigest_go/openai"
 	"newsletterdigest_go/utils"
@@ -17,14 +18,16 @@ import (
 const Separator = "\n\n——————————————————\n\n"
 
 type Processor struct {
-	openaiClient *openai.Client
-	config       *config.Config
+	openaiClient   *openai.Client
+	config         *config.Config
+	contentFetcher *fetcher.ContentFetcher
 }
 
 func New(client *openai.Client, cfg *config.Config) *Processor {
 	return &Processor{
-		openaiClient: client,
-		config:       cfg,
+		openaiClient:   client,
+		config:         cfg,
+		contentFetcher: fetcher.New(),
 	}
 }
 
@@ -80,6 +83,22 @@ func (p *Processor) summarizeSingle(ctx context.Context, newsletter *models.News
 	if len(body) == 0 {
 		return "", fmt.Errorf("empty body")
 	}
+
+	// Check if we should fetch additional content (e.g., LinkedIn articles)
+	if p.config.FetchFullContent {
+		if shouldFetch, url := p.contentFetcher.ShouldFetchContent(body, newsletter.Links); shouldFetch {
+			fmt.Printf("Detected LinkedIn newsletter teaser for: %s\n", newsletter.Subject)
+			if fullContent, err := p.contentFetcher.FetchLinkedInContent(url); err == nil {
+				fmt.Printf("Successfully fetched additional content (%d chars)\n", len(fullContent))
+				// Combine the teaser with the full content
+				body = body + "\n\n--- Full Article Content ---\n" + fullContent
+			} else {
+				fmt.Printf("Failed to fetch content: %v\n", err)
+				// Continue with just the teaser content
+			}
+		}
+	}
+
 	if len(body) > p.config.PerEmailMaxChars {
 		body = body[:p.config.PerEmailMaxChars]
 	}
@@ -125,31 +144,39 @@ func (p *Processor) synthesizeFinal(ctx context.Context, perSumm []string, meta 
 	joined := strings.Join(perSumm, Separator)
 
 	system := p.config.PromptFinal
-	user := "Combine and rank the following per-email bullet summaries into a weekly digest, grouped strictly in this order:\n" +
-		"1) Product Management  2) Healthcare  3) Architecture  4) Team Organization  (then an AI section ONLY if relevant).\n" +
+	user := "Combine and rank the following per-email bullet summaries into a weekly digest, grouped in this EXACT order:\n" +
+		"1) === Product Management ===\n" +
+		"2) === Healthcare ===\n" +
+		"3) === Architecture ===\n" +
+		"4) === Team Organization ===\n" +
+		"5) === AI ===\n" +
 		"Rules:\n" +
-		"- Output only plain text with section headers like '=== Product Management ==='\n" +
+		"- MUST generate ALL 5 sections above in exact order, even if brief\n" +
 		"- Follow each section header with bullet points starting with '- '\n" +
-		"- If a section has no content, OMIT the section entirely\n" +
+		"- If no content for a section, add '- No significant updates this week'\n" +
 		"- Merge duplicates, preserve key facts/metrics, include short source names\n" +
 		"- Keep [L1], [L2] references as-is in the text for link replacement\n" +
 		"- No HTML, Markdown, or special formatting - just plain text\n\n" +
 		"=== PER-EMAIL SUMMARIES ===\n" + joined +
 		"\n\n=== LINK INDEX (map [L*] to URLs) ===\n" + linkIndex + "\n\n" +
-		"Output only plain text sections with the format shown above."
+		"Generate exactly 5 sections as specified above."
 
 	messages := []openai.ChatMessage{
 		{Role: "system", Content: system},
 		{Role: "user", Content: user},
 	}
 
-	out, err := p.openaiClient.Chat(ctx, p.config.FinalModel, messages, 0.2, 2000)
+	out, err := p.openaiClient.Chat(ctx, p.config.FinalModel, messages, 0.1, 2000)
 	if err != nil {
 		return "", err
 	}
 
 	fmt.Printf("Raw ChatGPT plain text length: %d chars\n", len(out))
-	fmt.Printf("Raw ChatGPT plain text (first 500 chars): %s...\n", out[:min(500, len(out))])
+	fmt.Printf("Raw ChatGPT plain text (first 800 chars): %s...\n", out[:min(800, len(out))])
+
+	// Show what sections were detected
+	sections := p.detectSections(out)
+	fmt.Printf("Detected sections: %v\n", sections)
 
 	// Parse the plain text and convert to HTML
 	htmlContent := p.parseTextToHTML(strings.TrimSpace(out), meta)
@@ -219,6 +246,21 @@ func (p *Processor) parseTextToHTML(text string, meta []*models.Newsletter) stri
 	}
 
 	return html.String()
+}
+
+func (p *Processor) detectSections(text string) []string {
+	var sections []string
+	lines := strings.Split(text, "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "===") && strings.HasSuffix(line, "===") {
+			sectionName := strings.TrimSpace(strings.Trim(line, "="))
+			sections = append(sections, sectionName)
+		}
+	}
+
+	return sections
 }
 
 func (p *Processor) buildCompleteHTML(content string) string {
