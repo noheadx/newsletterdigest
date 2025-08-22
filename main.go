@@ -15,6 +15,9 @@ import (
 )
 
 func main() {
+	//Initial load of environmental variables
+	config.LoadEnvFile(".env")
+
 	// Check for setup command
 	if len(os.Args) > 1 && os.Args[1] == "setup" {
 		if err := setupCredentials(); err != nil {

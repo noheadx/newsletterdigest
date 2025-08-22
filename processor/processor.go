@@ -305,7 +305,7 @@ func (p *Processor) aiContentFilter(ctx context.Context, post fetcher.LinkedInPo
 		{Role: "system", Content: "You are a content quality filter for professional insights. Respond only with 'PROFESSIONAL' or 'PROMOTIONAL'."},
 		{Role: "user", Content: prompt},
 	}
-	fmt.Println("Calling model with content ", messages)
+
 	response, err := p.openaiClient.Chat(ctx, p.config.SmallModel, messages, 0.1, 50)
 	if err != nil {
 		fmt.Printf("AI filter error for post by %s: %v\n", post.Author, err)
@@ -383,10 +383,11 @@ func (p *Processor) synthesizeFinal(ctx context.Context, perSumm []string, meta 
 	user := "Combine and rank the following content into a weekly digest, grouped in this EXACT order:\n" +
 		"1) === Product Management ===\n" +
 		"2) === Healthcare ===\n" +
-		"3) === Architecture ===\n" +
+		"3) === Software Architecture ===\n" +
 		"4) === Team Organization ===\n" +
 		"5) === AI ===\n" +
 		"Content includes both newsletter summaries and LinkedIn insights. Merge related content into appropriate sections.\n" +
+		"IMPORTANT: For Software Architecture section - ONLY include content about software architecture, system design, cloud architecture, microservices, APIs, technical architecture, DevOps, infrastructure. DO NOT include building architecture, physical architecture, or construction-related content.\n" +
 		"Rules:\n" +
 		"- MUST generate ALL 5 sections above in exact order, even if brief\n" +
 		"- Follow each section header with bullet points starting with '- '\n" +
@@ -551,13 +552,13 @@ func (p *Processor) buildCompleteHTML(content string, digestType string) string 
 	var metaText string
 	switch digestType {
 	case "LinkedIn":
-		metaText = "Industry insights from LinkedIn: Product Management → Healthcare → Architecture → Team Organization → AI"
+		metaText = "Industry insights from LinkedIn: Product Management → Healthcare → Software Architecture → Team Organization → AI"
 	case "Newsletter":
-		metaText = "Newsletter summary: Product Management → Healthcare → Architecture → Team Organization → AI"
+		metaText = "Newsletter summary: Product Management → Healthcare → Software Architecture → Team Organization → AI"
 	case "Combined":
-		metaText = "Combined insights from newsletters and LinkedIn: Product Management → Healthcare → Architecture → Team Organization → AI"
+		metaText = "Combined insights from newsletters and LinkedIn: Product Management → Healthcare → Software Architecture → Team Organization → AI"
 	default:
-		metaText = "Prioritized: Product Management → Healthcare → Architecture → Team Organization → AI"
+		metaText = "Prioritized: Product Management → Healthcare → Software Architecture → Team Organization → AI"
 	}
 
 	html.WriteString("  <div class=\"meta\">" + metaText + "</div>\n")
