@@ -364,15 +364,17 @@ func (p *Processor) summarizeLinkedInPost(ctx context.Context, post fetcher.Link
 }
 
 func (p *Processor) synthesizeFinal(ctx context.Context, perSumm []string, meta []*models.Newsletter, digestType string) (string, error) {
-	// Build link index
+	// Build link index with global numbering
 	var li []string
+	linkCounter := 1
 	for _, m := range meta {
 		if len(m.Links) == 0 {
 			continue
 		}
 		var lines []string
-		for j, u := range m.Links {
-			lines = append(lines, fmt.Sprintf("[L%d] %s", j+1, u))
+		for _, u := range m.Links {
+			lines = append(lines, fmt.Sprintf("[L%d] %s", linkCounter, u))
+			linkCounter++
 		}
 		li = append(li, fmt.Sprintf("%s\n%s", m.Subject, strings.Join(lines, "\n")))
 	}
@@ -431,13 +433,20 @@ func (p *Processor) synthesizeFinal(ctx context.Context, perSumm []string, meta 
 func (p *Processor) parseTextToHTML(text string, meta []*models.Newsletter) string {
 	var html strings.Builder
 
-	// Build link map for [L1], [L2] replacement
-	linkMap := make(map[string]string)
+	// Build link map for [L1], [L2] replacement with newsletter metadata
+	type sourceInfo struct {
+		subject string
+		date    string
+	}
+	linkMap := make(map[string]sourceInfo)
 	linkCounter := 1
 	for _, m := range meta {
-		for _, link := range m.Links {
+		for range m.Links {
 			linkKey := fmt.Sprintf("[L%d]", linkCounter)
-			linkMap[linkKey] = link
+			linkMap[linkKey] = sourceInfo{
+				subject: m.Subject,
+				date:    m.Date,
+			}
 			linkCounter++
 		}
 	}
@@ -467,11 +476,14 @@ func (p *Processor) parseTextToHTML(text string, meta []*models.Newsletter) stri
 			// Bullet point
 			bulletText := strings.TrimSpace(line[2:]) // Remove "- "
 
-			// Replace [L1], [L2] references with actual links
-			for linkKey, linkURL := range linkMap {
+			// Replace [L1], [L2] references with newsletter subject and date
+			for linkKey, info := range linkMap {
 				if strings.Contains(bulletText, linkKey) {
-					linkHTML := fmt.Sprintf(`<a href="%s">source</a>`, utils.HtmlEscape(linkURL))
-					bulletText = strings.Replace(bulletText, linkKey, linkHTML, -1)
+					formattedDate := utils.FormatEmailDate(info.date)
+					sourceHTML := fmt.Sprintf(`<span class="source">(%s - %s)</span>`,
+						utils.HtmlEscape(info.subject),
+						utils.HtmlEscape(formattedDate))
+					bulletText = strings.Replace(bulletText, linkKey, sourceHTML, -1)
 				}
 			}
 
@@ -529,6 +541,7 @@ func (p *Processor) buildCompleteHTML(content string, digestType string) string 
 	html.WriteString("    a{color:#0066cc;text-decoration:none}\n")
 	html.WriteString("    a:hover{text-decoration:underline}\n")
 	html.WriteString("    pre{white-space:pre-wrap;word-wrap:break-word;background:#f8f9fa;padding:12px;border-radius:4px}\n")
+	html.WriteString("    .source{color:#666;font-size:0.9em;font-style:italic}\n")
 	html.WriteString("  </style>\n")
 	html.WriteString("</head>\n")
 	html.WriteString("<body>\n")

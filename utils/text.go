@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	html2text "github.com/jaytaylor/html2text"
 	gmail "google.golang.org/api/gmail/v1"
@@ -137,4 +138,33 @@ func HtmlEscape(s string) string {
 		"&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;",
 	)
 	return r.Replace(s)
+}
+
+// FormatEmailDate parses an RFC 2822 email date and returns a readable format
+// Example: "Mon, 2 Jan 2006 15:04:05 -0700" -> "Jan 2, 2006"
+func FormatEmailDate(emailDate string) string {
+	if emailDate == "" {
+		return ""
+	}
+
+	// RFC 2822 email date formats to try in order
+	formats := []string{
+		time.RFC1123Z,                    // "Mon, 02 Jan 2006 15:04:05 -0700"
+		time.RFC1123,                     // "Mon, 02 Jan 2006 15:04:05 MST"
+		"Mon, 2 Jan 2006 15:04:05 -0700", // Single digit day with timezone
+		"Mon, 2 Jan 2006 15:04:05 MST",   // Single digit day without numeric timezone
+	}
+
+	var t time.Time
+	var err error
+	for _, format := range formats {
+		t, err = time.Parse(format, emailDate)
+		if err == nil {
+			// Successfully parsed, format as "Jan 2, 2006"
+			return t.Format("Jan 2, 2006")
+		}
+	}
+
+	// If all parsing attempts fail, return original
+	return emailDate
 }
