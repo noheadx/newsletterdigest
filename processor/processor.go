@@ -410,8 +410,8 @@ func (p *Processor) synthesizeFinal(ctx context.Context, perSumm []string, meta 
 		return "", err
 	}
 
-	fmt.Printf("Raw ChatGPT plain text length: %d chars\n", len(out))
-	fmt.Printf("Raw ChatGPT plain text (first 800 chars): %s...\n", out[:min(800, len(out))])
+	fmt.Printf("Raw Claude plain text length: %d chars\n", len(out))
+	fmt.Printf("Raw Claude plain text (first 800 chars): %s...\n", out[:min(800, len(out))])
 
 	// Show what sections were detected
 	sections := p.detectSections(out)

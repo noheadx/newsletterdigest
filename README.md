@@ -6,12 +6,12 @@
 
 2. **Fill in your values**:
    ```bash
-   # OpenAI Configuration
-   OPENAI_API_KEY=sk-your-actual-openai-api-key
-   OPENAI_MODEL_SMALL=gpt-4o-mini
-   OPENAI_MODEL_FINAL=gpt-4o
+   # Claude (Anthropic) Configuration
+   ANTHROPIC_API_KEY=sk-ant-your-actual-anthropic-api-key
+   CLAUDE_MODEL_SMALL=claude-haiku-4-5-20251001
+   CLAUDE_MODEL_FINAL=claude-sonnet-4-5-20250929
 
-   # Gmail Configuration  
+   # Gmail Configuration
    GMAIL_QUERY=label:newsletter is:unread
    TO_EMAIL=your-actual-email@gmail.com
 
@@ -40,9 +40,9 @@
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `OPENAI_API_KEY` | Your OpenAI API key | - | ✅ |
-| `OPENAI_MODEL_SMALL` | Model for individual summaries | `gpt-4o-mini` | ❌ |
-| `OPENAI_MODEL_FINAL` | Model for final digest | `gpt-4o` | ❌ |
+| `ANTHROPIC_API_KEY` | Your Anthropic API key | - | ✅ |
+| `CLAUDE_MODEL_SMALL` | Claude model for individual summaries | `claude-haiku-4-5-20251001` | ❌ |
+| `CLAUDE_MODEL_FINAL` | Claude model for final digest | `claude-sonnet-4-5-20250929` | ❌ |
 | `GMAIL_QUERY` | Gmail search query | `label:newsletter is:unread` | ❌ |
 | `TO_EMAIL` | Email address to send digest to | - | ✅ |
 | `GOOGLE_CREDENTIALS_FILE` | Path to Google OAuth credentials | - | ✅ (for setup) |

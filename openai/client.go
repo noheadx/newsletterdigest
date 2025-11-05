@@ -24,17 +24,23 @@ type ChatMessage struct {
 	Content string `json:"content"`
 }
 
+type claudeMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 type chatReq struct {
-	Model       string        `json:"model"`
-	Messages    []ChatMessage `json:"messages"`
-	Temperature float64       `json:"temperature"`
-	MaxTokens   int           `json:"max_completion_tokens"`
+	Model       string          `json:"model"`
+	Messages    []claudeMessage `json:"messages"`
+	Temperature float64         `json:"temperature"`
+	MaxTokens   int             `json:"max_tokens"`
+	System      string          `json:"system,omitempty"`
 }
 
 type chatResp struct {
-	Choices []struct {
-		Message ChatMessage `json:"message"`
-	} `json:"choices"`
+	Content []struct {
+		Text string `json:"text"`
+	} `json:"content"`
 }
 
 func NewClient() *Client {
@@ -42,23 +48,40 @@ func NewClient() *Client {
 }
 
 func (c *Client) Chat(ctx context.Context, model string, messages []ChatMessage, temp float64, maxTok int) (string, error) {
-	apiKey := os.Getenv("OPENAI_API_KEY")
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
-		return "", errors.New("missing OPENAI_API_KEY")
+		return "", errors.New("missing ANTHROPIC_API_KEY")
 	}
 
-	fmt.Printf("Calling ChatGPT: model %s temperature: %.1f max_tokens: %d\n", model, temp, maxTok)
+	fmt.Printf("Calling Claude: model %s temperature: %.1f max_tokens: %d\n", model, temp, maxTok)
+
+	// Convert messages and extract system message
+	var systemMsg string
+	var claudeMessages []claudeMessage
+
+	for _, msg := range messages {
+		if msg.Role == "system" {
+			systemMsg = msg.Content
+		} else {
+			claudeMessages = append(claudeMessages, claudeMessage{
+				Role:    msg.Role,
+				Content: msg.Content,
+			})
+		}
+	}
 
 	reqBody := chatReq{
 		Model:       model,
-		Messages:    messages,
+		Messages:    claudeMessages,
 		Temperature: temp,
 		MaxTokens:   maxTok,
+		System:      systemMsg,
 	}
 
 	b, _ := json.Marshal(reqBody)
-	req, _ := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/chat/completions", strings.NewReader(string(b)))
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req, _ := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", strings.NewReader(string(b)))
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("Content-Type", "application/json")
 
 	var lastErr error
@@ -74,16 +97,16 @@ func (c *Client) Chat(ctx context.Context, model string, messages []ChatMessage,
 				if err := json.Unmarshal(body, &cr); err != nil {
 					return "", err
 				}
-				if len(cr.Choices) == 0 {
-					return "", errors.New("no choices")
+				if len(cr.Content) == 0 {
+					return "", errors.New("no content in response")
 				}
-				return cr.Choices[0].Message.Content, nil
+				return cr.Content[0].Text, nil
 			}
 			// Retry on 429/5xx
 			if resp.StatusCode == 429 || (resp.StatusCode >= 500 && resp.StatusCode <= 599) {
-				lastErr = fmt.Errorf("openai status %d: %s", resp.StatusCode, string(body))
+				lastErr = fmt.Errorf("claude status %d: %s", resp.StatusCode, string(body))
 			} else {
-				return "", fmt.Errorf("openai status %d: %s", resp.StatusCode, string(body))
+				return "", fmt.Errorf("claude status %d: %s", resp.StatusCode, string(body))
 			}
 		}
 

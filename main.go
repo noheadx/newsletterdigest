@@ -3,90 +3,142 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"newsletterdigest_go/config"
 	"newsletterdigest_go/credentials"
 	"newsletterdigest_go/gmail"
+	"newsletterdigest_go/models"
 	"newsletterdigest_go/openai"
 	"newsletterdigest_go/processor"
 )
 
+type App struct {
+	cfg         *config.Config
+	gmailSvc    *gmail.Service
+	openaiClient *openai.Client
+	processor   *processor.Processor
+}
+
 func main() {
-	//Initial load of environmental variables
 	config.LoadEnvFile(".env")
 
-	// Check for setup command
+	if handleCommand() {
+		return
+	}
+
+	ctx, cancel := setupContext()
+	defer cancel()
+
+	app, err := initializeApp(ctx)
+	if err != nil {
+		log.Fatalf("initialization failed: %v", err)
+	}
+
+	if err := app.run(ctx); err != nil {
+		log.Fatalf("application error: %v", err)
+	}
+}
+
+func handleCommand() bool {
 	if len(os.Args) > 1 && os.Args[1] == "setup" {
 		if err := setupCredentials(); err != nil {
 			log.Fatalf("setup failed: %v", err)
 		}
-		return
+		return true
 	}
+	return false
+}
 
-	// Validate environment
+func setupContext() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	
+	go func() {
+		<-c
+		log.Println("[digest] Received shutdown signal, gracefully shutting down...")
+		cancel()
+	}()
+	
+	return ctx, cancel
+}
+
+func initializeApp(ctx context.Context) (*App, error) {
 	if err := credentials.ValidateEnvironment(); err != nil {
-		log.Fatalf("environment validation failed: %v", err)
+		return nil, fmt.Errorf("environment validation: %w", err)
 	}
 
-	ctx := context.Background()
-
-	// Initialize Gmail service
 	gmailSvc, err := gmail.NewService(ctx)
 	if err != nil {
-		log.Fatalf("gmail service: %v", err)
+		return nil, fmt.Errorf("gmail service: %w", err)
 	}
 
-	// Get configuration
 	cfg := config.Load()
+	openaiClient := openai.NewClient()
+	proc := processor.New(openaiClient, cfg)
 
-	// Fetch newsletters
-	newsletters, err := gmailSvc.FetchNewsletters(ctx, cfg.GmailQuery, cfg.MaxResults)
+	return &App{
+		cfg:          cfg,
+		gmailSvc:     gmailSvc,
+		openaiClient: openaiClient,
+		processor:    proc,
+	}, nil
+}
+
+func (app *App) run(ctx context.Context) error {
+	newsletters, err := app.gmailSvc.FetchNewsletters(ctx, app.cfg.GmailQuery, app.cfg.MaxResults)
 	if err != nil {
-		log.Fatalf("fetch newsletters: %v", err)
+		return fmt.Errorf("fetch newsletters: %w", err)
 	}
 
-	if len(newsletters) == 0 && !cfg.LinkedInOnlyMode {
+	if len(newsletters) == 0 && !app.cfg.LinkedInOnlyMode {
 		log.Println("[digest] No unread newsletters found and LinkedIn-only mode disabled. Exiting.")
-		return
+		return nil
 	}
 
-	if len(newsletters) == 0 && cfg.LinkedInOnlyMode {
+	if len(newsletters) == 0 && app.cfg.LinkedInOnlyMode {
 		log.Println("[digest] No unread newsletters found, but LinkedIn-only mode enabled. Proceeding with LinkedIn content only.")
 	}
 
-	// Initialize OpenAI client
-	openaiClient := openai.NewClient()
-
-	// Process newsletters
-	proc := processor.New(openaiClient, cfg)
-	digest, processedItems, err := proc.ProcessNewsletters(ctx, newsletters)
+	digest, processedItems, err := app.processor.ProcessNewsletters(ctx, newsletters)
 	if err != nil {
-		log.Fatalf("process newsletters: %v", err)
+		return fmt.Errorf("process newsletters: %w", err)
 	}
 
-	// Send digest email with appropriate subject
-	var subject string
-	if len(newsletters) > 0 && len(processedItems) > 0 {
-		subject = "Weekly Digest - " + time.Now().Format("2006-01-02")
-	} else {
-		subject = "LinkedIn Industry Digest - " + time.Now().Format("2006-01-02")
-	}
-	if err := gmailSvc.SendHTML(ctx, cfg.ToEmail, subject, digest); err != nil {
-		log.Fatalf("send email: %v", err)
+	subject := app.generateSubject(newsletters, processedItems)
+	if err := app.gmailSvc.SendHTML(ctx, app.cfg.ToEmail, subject, digest); err != nil {
+		return fmt.Errorf("send email: %w", err)
 	}
 
-	// Mark emails as read (unless dry run)
-	if !cfg.DryRun {
-		if err := gmailSvc.MarkAsRead(ctx, processedItems); err != nil {
-			log.Printf("mark as read: %v", err)
-		}
+	if err := app.markEmailsAsRead(ctx, processedItems); err != nil {
+		log.Printf("[digest] Warning: failed to mark emails as read: %v", err)
 	}
 
 	log.Printf("[digest] %s processed=%d sent_to=%s dry_run=%v",
-		time.Now().Format(time.RFC3339), len(processedItems), cfg.ToEmail, cfg.DryRun)
+		time.Now().Format(time.RFC3339), len(processedItems), app.cfg.ToEmail, app.cfg.DryRun)
+	
+	return nil
+}
+
+func (app *App) generateSubject(newsletters []*models.Newsletter, processedItems []*models.Newsletter) string {
+	if len(newsletters) > 0 && len(processedItems) > 0 {
+		return "Weekly Digest - " + time.Now().Format("2006-01-02")
+	}
+	return "LinkedIn Industry Digest - " + time.Now().Format("2006-01-02")
+}
+
+func (app *App) markEmailsAsRead(ctx context.Context, processedItems []*models.Newsletter) error {
+	if app.cfg.DryRun {
+		return nil
+	}
+	return app.gmailSvc.MarkAsRead(ctx, processedItems)
 }
 
 func setupCredentials() error {

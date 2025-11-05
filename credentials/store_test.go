@@ -123,7 +123,7 @@ func TestInvalidPassphrase(t *testing.T) {
 func TestValidateEnvironment(t *testing.T) {
 	// Save original environment
 	originalValues := map[string]string{
-		"OPENAI_API_KEY":         os.Getenv("OPENAI_API_KEY"),
+		"ANTHROPIC_API_KEY":      os.Getenv("ANTHROPIC_API_KEY"),
 		"TO_EMAIL":               os.Getenv("TO_EMAIL"),
 		"CREDENTIALS_PASSPHRASE": os.Getenv("CREDENTIALS_PASSPHRASE"),
 	}
@@ -148,7 +148,7 @@ func TestValidateEnvironment(t *testing.T) {
 	}
 
 	// Test with valid variables
-	os.Setenv("OPENAI_API_KEY", "test-key")
+	os.Setenv("ANTHROPIC_API_KEY", "test-key")
 	os.Setenv("TO_EMAIL", "test@example.com")
 	os.Setenv("CREDENTIALS_PASSPHRASE", "test-passphrase")
 

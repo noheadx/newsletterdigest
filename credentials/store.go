@@ -341,7 +341,7 @@ func (s *Store) SetupFromFile(credentialsPath string) error {
 // ValidateEnvironment checks that all required environment variables are set
 func ValidateEnvironment() error {
 	required := map[string]string{
-		"OPENAI_API_KEY":         "OpenAI API key for summarization",
+		"ANTHROPIC_API_KEY":      "Anthropic API key for Claude summarization",
 		"TO_EMAIL":               "Destination email address",
 		"CREDENTIALS_PASSPHRASE": "Passphrase for credential encryption",
 	}
