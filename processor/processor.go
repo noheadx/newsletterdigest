@@ -37,7 +37,6 @@ func (p *Processor) ProcessNewsletters(ctx context.Context, newsletters []*model
 
 	// Process newsletters if available
 	if len(newsletters) > 0 {
-		fmt.Printf("Processing %d newsletters...\n", len(newsletters))
 		for _, newsletter := range newsletters {
 			summary, err := p.summarizeSingle(ctx, newsletter)
 			if err != nil {
@@ -50,8 +49,6 @@ func (p *Processor) ProcessNewsletters(ctx context.Context, newsletters []*model
 
 			time.Sleep(p.config.PerEmailSleep)
 		}
-	} else {
-		fmt.Println("No newsletters found")
 	}
 
 	// Fetch LinkedIn content if enabled
@@ -60,10 +57,6 @@ func (p *Processor) ProcessNewsletters(ctx context.Context, newsletters []*model
 		(len(newsletters) > 0 || p.config.LinkedInOnlyMode)
 
 	if shouldFetchLinkedIn {
-		if len(newsletters) == 0 {
-			fmt.Println("LinkedIn-only mode: fetching LinkedIn content without newsletters")
-		}
-
 		linkedInContent, err := p.fetchLinkedInContent(ctx)
 		if err != nil {
 			fmt.Printf("Error fetching LinkedIn content: %v\n", err)
@@ -131,14 +124,9 @@ func (p *Processor) summarizeSingle(ctx context.Context, newsletter *models.News
 	// Check if we should fetch additional content (e.g., LinkedIn articles)
 	if p.config.FetchFullContent {
 		if shouldFetch, url := p.contentFetcher.ShouldFetchContent(body, newsletter.Links); shouldFetch {
-			fmt.Printf("Detected LinkedIn newsletter teaser for: %s\n", newsletter.Subject)
 			if fullContent, err := p.contentFetcher.FetchLinkedInContent(url); err == nil {
-				fmt.Printf("Successfully fetched additional content (%d chars)\n", len(fullContent))
 				// Combine the teaser with the full content
 				body = body + "\n\n--- Full Article Content ---\n" + fullContent
-			} else {
-				fmt.Printf("Failed to fetch content: %v\n", err)
-				// Continue with just the teaser content
 			}
 		}
 	}
@@ -151,7 +139,7 @@ func (p *Processor) summarizeSingle(ctx context.Context, newsletter *models.News
 	if len(newsletter.Links) > 0 {
 		lb.WriteString("Relevant links:\n")
 		for i := range newsletter.Links {
-			lb.WriteString(fmt.Sprintf("- %s\n", newsletter.Links[i]))
+			lb.WriteString(fmt.Sprintf("[L%d] %s\n", i+1, newsletter.Links[i]))
 		}
 		lb.WriteString("\n")
 	}
@@ -172,8 +160,6 @@ func (p *Processor) summarizeSingle(ctx context.Context, newsletter *models.News
 }
 
 func (p *Processor) fetchLinkedInContent(ctx context.Context) ([]string, error) {
-	fmt.Printf("Fetching LinkedIn content for hashtags: %v\n", p.config.LinkedInHashtags)
-
 	// Fetch LinkedIn posts for the configured hashtags
 	posts, err := p.contentFetcher.FetchLinkedInHashtagContent(p.config.LinkedInHashtags, 15, p.config.LinkedInFetchFullContent) // Fetch more to account for filtering
 	if err != nil {
@@ -181,11 +167,8 @@ func (p *Processor) fetchLinkedInContent(ctx context.Context) ([]string, error) 
 	}
 
 	if len(posts) == 0 {
-		fmt.Println("No LinkedIn posts found for the specified hashtags")
 		return nil, nil
 	}
-
-	fmt.Printf("Found %d LinkedIn posts, filtering for professional content...\n", len(posts))
 
 	// Filter out promotional/advertising content if enabled
 	var filteredPosts []fetcher.LinkedInPost
@@ -193,8 +176,6 @@ func (p *Processor) fetchLinkedInContent(ctx context.Context) ([]string, error) 
 		for _, post := range posts {
 			if p.isContentProfessional(ctx, post) {
 				filteredPosts = append(filteredPosts, post)
-			} else {
-				fmt.Printf("Filtered out promotional post by %s\n", post.Author)
 			}
 
 			// Limit to target number after filtering
@@ -202,18 +183,15 @@ func (p *Processor) fetchLinkedInContent(ctx context.Context) ([]string, error) 
 				break
 			}
 		}
-		fmt.Printf("After filtering: %d professional posts remain\n", len(filteredPosts))
 	} else {
 		// No filtering, use all posts but limit to 10
 		filteredPosts = posts
 		if len(filteredPosts) > 10 {
 			filteredPosts = filteredPosts[:10]
 		}
-		fmt.Printf("Content filtering disabled, using %d posts\n", len(filteredPosts))
 	}
 
 	if len(filteredPosts) == 0 {
-		fmt.Println("No professional content found after filtering")
 		return nil, nil
 	}
 
@@ -222,7 +200,6 @@ func (p *Processor) fetchLinkedInContent(ctx context.Context) ([]string, error) 
 	for _, post := range filteredPosts {
 		summary, err := p.summarizeLinkedInPost(ctx, post)
 		if err != nil {
-			fmt.Printf("Error summarizing LinkedIn post: %v\n", err)
 			continue
 		}
 
@@ -308,20 +285,12 @@ func (p *Processor) aiContentFilter(ctx context.Context, post fetcher.LinkedInPo
 
 	response, err := p.openaiClient.Chat(ctx, p.config.SmallModel, messages, 0.1, 50)
 	if err != nil {
-		fmt.Printf("AI filter error for post by %s: %v\n", post.Author, err)
 		// If AI fails, fall back to heuristics - err on side of inclusion for professional-looking content
 		return !p.hasStrongPromotionalLanguage(post.Text)
 	}
 
 	response = strings.ToUpper(strings.TrimSpace(response))
-	isProfessional := response == "PROFESSIONAL"
-
-	if !isProfessional {
-		fmt.Printf("AI classified as promotional: %s (by %s)\n",
-			p.truncateText(post.Text, 100), post.Author)
-	}
-
-	return isProfessional
+	return response == "PROFESSIONAL"
 }
 
 func (p *Processor) hasStrongPromotionalLanguage(text string) bool {
@@ -412,20 +381,11 @@ func (p *Processor) synthesizeFinal(ctx context.Context, perSumm []string, meta 
 		return "", err
 	}
 
-	fmt.Printf("Raw Claude plain text length: %d chars\n", len(out))
-	fmt.Printf("Raw Claude plain text (first 800 chars): %s...\n", out[:min(800, len(out))])
-
-	// Show what sections were detected
-	sections := p.detectSections(out)
-	fmt.Printf("Detected sections: %v\n", sections)
-
 	// Parse the plain text and convert to HTML
 	htmlContent := p.parseTextToHTML(strings.TrimSpace(out), meta)
 
 	// Build the complete HTML document ourselves
 	finalHTML := p.buildCompleteHTML(htmlContent, digestType)
-
-	fmt.Printf("Final HTML length: %d chars\n", len(finalHTML))
 
 	return finalHTML, nil
 }
@@ -433,19 +393,21 @@ func (p *Processor) synthesizeFinal(ctx context.Context, perSumm []string, meta 
 func (p *Processor) parseTextToHTML(text string, meta []*models.Newsletter) string {
 	var html strings.Builder
 
-	// Build link map for [L1], [L2] replacement with newsletter metadata
+	// Build link map for [L1], [L2] replacement with newsletter metadata and URLs
 	type sourceInfo struct {
 		subject string
 		date    string
+		url     string
 	}
 	linkMap := make(map[string]sourceInfo)
 	linkCounter := 1
 	for _, m := range meta {
-		for range m.Links {
+		for _, link := range m.Links {
 			linkKey := fmt.Sprintf("[L%d]", linkCounter)
 			linkMap[linkKey] = sourceInfo{
 				subject: m.Subject,
 				date:    m.Date,
+				url:     link,
 			}
 			linkCounter++
 		}
@@ -476,13 +438,14 @@ func (p *Processor) parseTextToHTML(text string, meta []*models.Newsletter) stri
 			// Bullet point
 			bulletText := strings.TrimSpace(line[2:]) // Remove "- "
 
-			// Replace [L1], [L2] references with newsletter subject and date
+			// Replace [L1], [L2] references with newsletter subject, date, and clickable arrow
 			for linkKey, info := range linkMap {
 				if strings.Contains(bulletText, linkKey) {
 					formattedDate := utils.FormatEmailDate(info.date)
-					sourceHTML := fmt.Sprintf(`<span class="source">(%s - %s)</span>`,
+					sourceHTML := fmt.Sprintf(`<span class="source">(%s - %s) <a href="%s" class="source-link" target="_blank" title="Read full article">→</a></span>`,
 						utils.HtmlEscape(info.subject),
-						utils.HtmlEscape(formattedDate))
+						utils.HtmlEscape(formattedDate),
+						utils.HtmlEscape(info.url))
 					bulletText = strings.Replace(bulletText, linkKey, sourceHTML, -1)
 				}
 			}
@@ -542,6 +505,8 @@ func (p *Processor) buildCompleteHTML(content string, digestType string) string 
 	html.WriteString("    a:hover{text-decoration:underline}\n")
 	html.WriteString("    pre{white-space:pre-wrap;word-wrap:break-word;background:#f8f9fa;padding:12px;border-radius:4px}\n")
 	html.WriteString("    .source{color:#666;font-size:0.9em;font-style:italic}\n")
+	html.WriteString("    .source-link{color:#0066cc;text-decoration:none;font-style:normal;font-weight:bold;margin-left:4px}\n")
+	html.WriteString("    .source-link:hover{color:#0052a3}\n")
 	html.WriteString("  </style>\n")
 	html.WriteString("</head>\n")
 	html.WriteString("<body>\n")

@@ -90,7 +90,6 @@ func (f *ContentFetcher) isLinkedInNewsletter(text string, links []string) bool 
 func (f *ContentFetcher) FetchLinkedInContent(rawURL string) (string, error) {
 	// Clean the LinkedIn URL - remove everything after the first '?'
 	cleanURL := f.cleanLinkedInURL(rawURL)
-	fmt.Printf("Fetching LinkedIn content from: %s\n", cleanURL)
 
 	req, err := http.NewRequest("GET", cleanURL, nil)
 	if err != nil {
@@ -120,23 +119,16 @@ func (f *ContentFetcher) FetchLinkedInContent(rawURL string) (string, error) {
 		return "", err
 	}
 
-	// Debug: Check if content looks like HTML
-	bodyStr := string(body)
-	fmt.Printf("LinkedIn response content type: %s\n", resp.Header.Get("Content-Type"))
-	fmt.Printf("LinkedIn response size: %d bytes\n", len(bodyStr))
-	fmt.Printf("LinkedIn response preview (first 200 chars): %s...\n", f.safeStringPreview(bodyStr, 200))
-
 	// Convert HTML to text
+	bodyStr := string(body)
 	text, err := html2text.FromString(bodyStr)
 	if err != nil {
-		fmt.Printf("html2text conversion failed: %v, using raw text\n", err)
 		// Fallback: basic HTML tag removal
 		text = f.basicHTMLStrip(bodyStr)
 	}
 
 	// Clean and extract the main content
 	cleanText := f.extractLinkedInArticleContent(text)
-	fmt.Printf("Extracted LinkedIn content (first 200 chars): %s...\n", f.safeStringPreview(cleanText, 200))
 
 	return cleanText, nil
 }
@@ -209,7 +201,6 @@ func (f *ContentFetcher) FetchLinkedInHashtagContent(hashtags []string, maxPosts
 
 		posts, err := f.fetchHashtagPosts(cleanTag, maxPosts/len(hashtags), fetchFullContent)
 		if err != nil {
-			fmt.Printf("Error fetching posts for #%s: %v\n", cleanTag, err)
 			continue
 		}
 
@@ -227,17 +218,13 @@ func (f *ContentFetcher) FetchLinkedInHashtagContent(hashtags []string, maxPosts
 func (f *ContentFetcher) fetchHashtagPosts(hashtag string, limit int, fetchFullContent bool) ([]LinkedInPost, error) {
 	// Check cache first
 	if cached, found := f.getCachedResponse(hashtag); found {
-		fmt.Printf("Using cached data for #%s (%d posts)\n", hashtag, len(cached))
 		return f.processPosts(cached, hashtag, limit, fetchFullContent), nil
 	}
 
 	forumScoutKey := os.Getenv("FORUMSCOUT_API_KEY")
 	if forumScoutKey == "" {
-		fmt.Printf("No ForumScout API key found, using mock data for #%s\n", hashtag)
 		return f.createMockPosts(hashtag, limit), nil
 	}
-
-	fmt.Printf("Searching LinkedIn for hashtag: #%s using ForumScout API\n", hashtag)
 
 	// Build API request with keyword parameter
 	baseURL := "https://forumscout.app/api/linkedin_search"
@@ -283,15 +270,10 @@ func (f *ContentFetcher) fetchHashtagPosts(hashtag string, limit int, fetchFullC
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	// Debug: show raw response (helpful for troubleshooting)
-	fmt.Printf("ForumScout API response (first 300 chars): %s...\n", string(body)[:min(300, len(body))])
-
 	var posts []ForumScoutPost
 	if err := json.Unmarshal(body, &posts); err != nil {
 		return nil, fmt.Errorf("failed to parse API response: %w", err)
 	}
-
-	fmt.Printf("Found %d LinkedIn posts for #%s\n", len(posts), hashtag)
 
 	// Cache the response
 	f.cacheResponse(hashtag, posts)
@@ -329,19 +311,14 @@ func (f *ContentFetcher) processPosts(posts []ForumScoutPost, hashtag string, li
 		}
 
 		// Debug: Log the snippet content
-		fmt.Printf("Post snippet for '%s': %s\n", post.Title, f.safeStringPreview(snippet, 150))
+		// Process post snippet
 
 		// If full content fetching is enabled, get complete post content from LinkedIn URL
 		if fetchFullContent && len(snippet) < 300 {
-			fmt.Printf("Fetching full content for post: %s\n", post.Title)
 			if fullContent, err := f.FetchLinkedInContent(cleanURL); err == nil && len(fullContent) > len(snippet) {
 				// Ensure full content is also clean text
 				cleanFullContent := f.cleanTextContent(fullContent)
-				fmt.Printf("Enhanced content from %d to %d characters\n", len(snippet), len(cleanFullContent))
 				linkedInPost.Text = cleanFullContent
-			} else if err != nil {
-				fmt.Printf("Failed to fetch full content for '%s': %v\n", post.Title, err)
-				// Keep the snippet from API
 			}
 		}
 

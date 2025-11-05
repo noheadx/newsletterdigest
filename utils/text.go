@@ -13,14 +13,18 @@ import (
 
 var (
 	linkBlacklist = []*regexp.Regexp{
-		regexp.MustCompile(`unsubscribe`),
-		regexp.MustCompile(`manage[-_ ]?preferences`),
-		regexp.MustCompile(`update[-_ ]?subscription`),
+		regexp.MustCompile(`(?i)unsubscribe`),
+		regexp.MustCompile(`(?i)manage[-_ ]?preferences`),
+		regexp.MustCompile(`(?i)update[-_ ]?subscription`),
+		regexp.MustCompile(`(?i)subscription`),
 		regexp.MustCompile(`/privacy`),
 		regexp.MustCompile(`/terms`),
 		regexp.MustCompile(`/legal`),
 		regexp.MustCompile(`^mailto:`),
 		regexp.MustCompile(`#`),
+		regexp.MustCompile(`(?i)preferences`),
+		regexp.MustCompile(`(?i)opt[-_]?out`),
+		regexp.MustCompile(`(?i)remove`),
 	}
 	urlInTextRe = regexp.MustCompile(`https?://[^\s<>"\)]{5,}`)
 	hrefRe      = regexp.MustCompile(`href=['"](https?://[^'"]+)['"]`)
@@ -55,8 +59,8 @@ func ExtractLinks(htmlOrText string, isHTML bool) []string {
 		urls = append(urls, m[0])
 	}
 	
-	// Clean & filter
-	out := make([]string, 0, 3)
+	// Clean & filter - extract all relevant links, let Claude decide which are important
+	out := make([]string, 0)
 	seen := map[string]bool{}
 	for _, u := range urls {
 		u = strings.TrimSpace(strings.TrimRight(u, ").,;"))
@@ -71,7 +75,7 @@ func ExtractLinks(htmlOrText string, isHTML bool) []string {
 		if bad {
 			continue
 		}
-		
+
 		// Strip tracking params
 		pu, err := url.Parse(u)
 		if err == nil {
@@ -85,13 +89,10 @@ func ExtractLinks(htmlOrText string, isHTML bool) []string {
 			pu.RawQuery = q.Encode()
 			u = pu.String()
 		}
-		
+
 		if !seen[u] {
 			out = append(out, u)
 			seen[u] = true
-			if len(out) >= 3 {
-				break
-			}
 		}
 	}
 	return out

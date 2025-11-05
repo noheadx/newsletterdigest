@@ -53,7 +53,7 @@ func (c *Client) Chat(ctx context.Context, model string, messages []ChatMessage,
 		return "", errors.New("missing ANTHROPIC_API_KEY")
 	}
 
-	fmt.Printf("Calling Claude: model %s temperature: %.1f max_tokens: %d\n", model, temp, maxTok)
+	// Calling Claude API
 
 	// Convert messages and extract system message
 	var systemMsg string
